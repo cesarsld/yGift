@@ -12,7 +12,8 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 
 	struct Gift {
 		address	token;
-		uint amount;
+		uint amount;  // vested
+		uint tipped;  // not vested
 		uint start;
 		uint duration;
 		string name;
@@ -37,8 +38,6 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 	 * _start: the amount of time the gift will be locked until the recipient can collect it   
 	 * _duration: duration over which the amount linearly becomes available  *
 	 *
-	 * requirement: only a whitelisted minter can call this function
-	 *
 	 * Emits a {Tip} event.
 	 */
 	function mint(
@@ -58,6 +57,7 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 			message: _msg,
 			url: _url,
 			amount: _amount,
+			tipped: 0,
 			start: _start,
 			duration: _duration
 		}));
@@ -78,7 +78,7 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 	function tip(uint _tokenId, uint _amount, string calldata _msg) external {
 		require(_tokenId < gifts.length, "yGift: Token ID does not exist.");
 		Gift storage gift = gifts[_tokenId];
-		gift.amount = gift.amount.add(_amount);
+		gift.tipped = gift.tipped.add(_amount);
 		IERC20(gift.token).safeTransferFrom(msg.sender, address(this), _amount);
 		emit Tip(msg.sender, _tokenId, gift.token, _amount, _msg);
 	}
@@ -92,7 +92,6 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 	 * _amount: amount of tokens in the gift
 	 * _start: Time at which the cliff ends
 	 * _duration: vesting period
-	 *
 	 */
 	function available(uint _amount, uint _start, uint _duration) public view returns (uint) {
 		if (_start > block.timestamp) return 0;
@@ -101,11 +100,20 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 	}
 
 	/**
+	 * @dev Returns the maximum collectible amount of tokens for a given gift
+	 * _tokenId: gift for which to calculate the collectibe amount
+	 */
+	function collectible(uint _tokenId) public view returns (uint) {
+		Gift storage gift = gifts[_tokenId];
+		return available(gift.amount, gift.start, gift.duration).add(gift.tipped);
+	}
+
+	/**
 	 * @dev Allows the gift recipient to collect their tokens
 	 * _tokenId: gift in which the function caller would like to tip
 	 * _amount: amount of tokens the gift owner would like to collect
 	 *
-	 * requirement: caller must own the gift recipient && gift must have been redeemed
+	 * requirement: caller must be the owner of the gift
 	 */
 	function collect(uint _tokenId, uint _amount) public {
 		require(_isApprovedOrOwner(msg.sender, _tokenId), "yGift: You are not the NFT owner");
@@ -113,11 +121,15 @@ contract yGift is ERC721("yearn Gift NFT", "yGIFT") {
 		Gift storage gift = gifts[_tokenId];
 		
 		require(gift.start < block.timestamp, "yGift: Rewards still vesting");
-		uint _available = available(gift.amount, gift.start, gift.duration);
+		uint _vested = available(gift.amount, gift.start, gift.duration);
+		uint _available = _vested.add(gift.tipped);
 		if (_amount > _available) _amount = _available;
 		require(_amount > 0, "yGift: insufficient amount");
 
-		gift.amount = gift.amount.sub(_amount);
+		uint _tips = min(_amount, gift.tipped);
+		if (gift.tipped > 0) gift.tipped = gift.tipped.sub(_tips);
+		gift.amount = gift.amount.sub(_amount).add(_tips);
+
 		IERC20(gift.token).safeTransfer(msg.sender, _amount);
 		emit Collected(msg.sender, _tokenId, gift.token, _amount);
 	}
